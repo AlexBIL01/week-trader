@@ -34,7 +34,7 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 HOME = os.environ.get("WT_HOME") or os.path.join(os.getcwd(), "weektrader")
 OFFLINE_DIR = os.environ.get("WT_OFFLINE_DIR")  # tests and demos: read <dir>/<SYMBOL>.json
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) week-trader/" + VERSION
@@ -1072,8 +1072,65 @@ def climb_section(market, cfg, data, idx, top_n, refresh=False):
     return L, plans, res
 
 
+def predict_symbol(sym, market, cfg, refresh=False):
+    """Score one stock (in the universe or not) with the market's climb model, ranked against today's universe."""
+    pm = _predict_mod()
+    sym = sym.upper().replace(".AX", "")
+    data, idx, _ = load_market(market, cfg, refresh=refresh)
+    res = climb_model(market, cfg, data, idx)
+    b = data.get(sym) or fetch(sym, market, rng=cfg["history"], refresh=refresh)
+    if len(b["c"]) < 260:
+        raise WTError("%s: needs at least a year of price history" % sym)
+    ind = pm.extra_indicators(b, _helpers())
+    idx_close = dict(zip(idx["d"], idx["c"])) if idx else {}
+    i = len(b["c"]) - 1
+    f = pm.features_at(b, ind, i, idx_close)
+    if f is None:
+        raise WTError("%s: not enough data on the last close to score" % sym)
+    p = pm.predict_p(res["model"]["w"], pm.zrow(f, res["model"]["mu"], res["model"]["sd"]))
+    others = [r["p"] for r in pm.score_today(data, idx, res["model"], cfg, market, _helpers()) if r["symbol"] != sym]
+    rank = 1 + sum(1 for x in others if x > p)
+    reg = regime_map(idx) if idx else None
+    fired = signals_at(b, ind, i, cfg, market, reg, sym, None)
+    plan = make_plan(sym, market, b, ind, "climb", cfg)
+    signs = []
+    for j, name in enumerate(pm.NAMES):
+        signs.append({"meaning": pm.LABELS[name], "value": f[j], "z": (f[j] - res["model"]["mu"][j]) / res["model"]["sd"][j],
+                      "push": res["model"]["w"][j] * pm.zrow(f, res["model"]["mu"], res["model"]["sd"])[j]})
+    signs.sort(key=lambda r: -abs(r["push"]))
+    return {"symbol": sym, "market": market, "date": b["d"][i], "close": b["c"][i], "p": p, "rank": rank, "of": len(others) + 1,
+            "in_top10": p >= res["top10"]["p_cutoff"], "verdict": res["verdict"], "works": res["works"],
+            "setups_fired": fired, "plan": plan, "signs": signs, "in_universe": sym in data}
+
+
 def cmd_predict(a):
     cfg = load_config()
+    if a.symbol:
+        m = guess_market(a.symbol, a.market)
+        r = predict_symbol(a.symbol, m, cfg, refresh=a.refresh)
+        if a.json:
+            print(json.dumps(r, indent=2, default=str))
+            return
+        cur = "A$" if m == "ASX" else "US$"
+        pl = r["plan"]
+        print("## %s (%s) — climb prediction from the close on %s (%s%.2f)\n" % (r["symbol"], m, r["date"], cur, r["close"]))
+        print("Model score: %.0f%% chance of beating the median %s stock over the next %d trading days (50%% = no view)." % (
+            100 * r["p"], m, cfg["climb_horizon"]))
+        print("Rank: %d of %d stocks today%s." % (r["rank"], r["of"], " (in the model's top 10%)" if r["in_top10"] else ""))
+        print("Model status on %s: %s." % (m, r["verdict"]))
+        if not r["works"]:
+            print("**Watch only**: the %s model has not proven it can rank stocks on unseen weeks, so this score is not a prediction you can rely on." % m)
+        print("Setups firing on this close: %s." % (", ".join(r["setups_fired"]) or "none"))
+        print("\nWhat is driving the score (biggest effect first):")
+        for sgn in r["signs"][:6]:
+            print("  %-55s %+7.3f  (%s the usual, %s the score)" % (
+                sgn["meaning"], sgn["value"], "above" if sgn["z"] > 0 else "below", "raises" if sgn["push"] > 0 else "lowers"))
+        print("\nIf you paper trade it: buy %d share%s at about %s%.2f, stop %s%.2f, target %s%.2f, sell by %s · max loss A$%.2f" % (
+            pl["shares"], "" if pl["shares"] == 1 else "s", cur, pl["entry"], cur, pl["stop"], cur, pl["target"], pl["sell_by"], pl["risk_aud"]))
+        if not r["in_universe"]:
+            print("(%s isn't in the built-in list. Add it to \"watchlist\" in weektrader/config.json to include it in every scan.)" % r["symbol"])
+        print("\nNot financial advice.")
+        return
     out = {}
     for m in markets_arg(a.market, cfg):
         data, idx, failed = load_market(m, cfg, refresh=a.refresh)
@@ -1477,7 +1534,7 @@ def main(argv=None):
     p = sub.add_parser("backtest"); p.add_argument("--market", default="both"); p.add_argument("--setup"); p.add_argument("--symbol")
     p.add_argument("--hold-days", dest="hold_days", type=int); p.add_argument("--stop-atr", dest="stop_atr", type=float); p.add_argument("--target-atr", dest="target_atr", type=float)
     p.add_argument("--no-regime", action="store_true"); p.add_argument("--refresh", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_backtest)
-    p = sub.add_parser("predict"); p.add_argument("--market", default="both"); p.add_argument("--top", type=int)
+    p = sub.add_parser("predict"); p.add_argument("symbol", nargs="?"); p.add_argument("--market", default="both"); p.add_argument("--top", type=int)
     p.add_argument("--retrain", action="store_true"); p.add_argument("--refresh", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_predict)
     p = sub.add_parser("forward"); p.add_argument("--market", default="both"); p.set_defaults(fn=cmd_forward)
     p = sub.add_parser("insider"); p.add_argument("--quarters", type=int); p.add_argument("--refresh", action="store_true"); p.set_defaults(fn=cmd_insider)

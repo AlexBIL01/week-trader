@@ -464,6 +464,12 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("Climb predictor", out)
         self.assertIn("Verdict", out)
 
+    def test_3c_predict_one_symbol(self):
+        code, out = self.run_cli("predict", "AAPL")
+        self.assertEqual(code, 0)
+        self.assertIn("Model score", out)
+        self.assertIn("Rank:", out)
+
     def test_4_journal_round_trip(self):
         code, out = self.run_cli("journal", "add", "BHP", "--market", "ASX", "--setup", "breakout",
                                  "--entry", "25", "--shares", "40", "--stop", "24", "--target", "27", "--date", "2026-11-16")

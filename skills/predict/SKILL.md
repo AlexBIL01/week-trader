@@ -9,7 +9,7 @@ description: >-
   which warning signs actually came before climbs. Use when the user asks "what's
   about to climb", "predict", "which stocks will go up", "what comes before a
   run", "find stocks before they move", or "is the predictor working".
-argument-hint: "[US|ASX|both]"
+argument-hint: "[SYMBOL] [--market US|ASX|both]"
 ---
 
 # Week Trader: climb predictor
@@ -20,7 +20,13 @@ python3 "$WT" predict                    # both markets, top 10 each
 python3 "$WT" predict --market ASX --top 5
 python3 "$WT" predict --retrain          # retrain now (otherwise weekly)
 python3 "$WT" predict --json
+python3 "$WT" predict TTWO               # one stock, even if it isn't in the built-in list
+python3 "$WT" predict BHP --market ASX
 ```
+
+For one stock it shows: the model score, its rank among today's stocks, whether the
+market's model is proven, any setups firing, the six signs driving the score, and a
+paper-trade plan. If the model's verdict isn't "works", lead with "watch only".
 
 ## What "about to climb" means here
 
