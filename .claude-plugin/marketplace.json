@@ -1,0 +1,12 @@
+{
+  "name": "week-trader",
+  "owner": { "name": "Alex Nilsen" },
+  "plugins": [
+    {
+      "name": "week-trader",
+      "description": "Week-long swing trades on US and ASX stocks: scanner, backtester, planner and journal.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

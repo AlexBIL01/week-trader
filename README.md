@@ -1,0 +1,66 @@
+# Week Trader
+
+Find the best US and ASX stocks to buy and sell within one trading week, test
+every rule on five years of history before trusting it, size each trade in
+Australian dollars, and keep an honest journal.
+
+Five Claude Code skills, one standard-library Python engine (`engine/wt.py`).
+Nothing to pip install, no API keys, and no orders are ever placed.
+
+| command | what it does |
+|---|---|
+| `/week-trader:week` | This week's best trades to buy, plus what to sell from open trades |
+| `/week-trader:scan` | Today's signals on US and ASX stocks, ranked by backtested edge |
+| `/week-trader:backtest` | Tests the setups on 5 years of data with costs, vs a buy-any-day baseline |
+| `/week-trader:plan` | Entry, stop, target, sell-by date and share count in AUD for one stock |
+| `/week-trader:journal` | Logs trades, says when to sell, tracks your real win rate and profit |
+
+## Install (Mac)
+
+1. Unzip `week-trader.zip` into your home folder, so you have `~/week-trader`.
+2. In Terminal:
+   ```
+   cd ~/day-trading
+   claude
+   ```
+3. Inside Claude Code:
+   ```
+   /plugin marketplace add /Users/YOUR-MAC-USERNAME/week-trader
+   /plugin install week-trader@week-trader
+   /reload-plugins
+   ```
+4. Then: `/week-trader:week`. The first run asks for your account size and risk
+   per trade, checks the data, and downloads 5 years of prices (a few minutes).
+
+## Settings
+
+`weektrader/config.json` in the folder you run Claude from:
+
+| setting | default | meaning |
+|---|---|---|
+| `account_aud` | 10000 | trading account size in AUD |
+| `risk_per_trade_pct` | 1.0 | max loss at the stop, % of the account |
+| `max_position_pct` | 25 | largest single position, % of the account |
+| `max_open_trades` | 4 | the weekly report won't suggest more than this |
+| `hold_days` | 5 | sell by the close of this trading day |
+| `stop_atr` / `target_atr` | 1.5 / 3.0 | stop and target distance in ATR(14) |
+| `costs` | US $0 + 5 bps, ASX $5 + 10 bps | commission per side and slippage |
+| `aud_per_usd` | live | fixed AUD/USD rate if set |
+| `watchlist` | empty | extra symbols: `{"US": ["HIMS"], "ASX": ["CXO"]}` |
+
+## Tests
+
+```
+python3 -m unittest discover -s tests -v
+```
+
+Offline, on simulated prices: indicators, stops, gaps, time exits, costs,
+sizing, the weekly report and the journal.
+
+## Fine print
+
+Not financial advice. Backtests use daily bars, assume the stop is hit first on
+a day that touches both levels, and use today's stock list (survivorship bias),
+so real results are usually worse. Yahoo Finance's free data is unofficial and
+can lag or rate-limit. In Australia, shares held under 12 months get no capital gains
+discount; keep records. Paper trade first.
