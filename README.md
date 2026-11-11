@@ -17,20 +17,18 @@ Nothing to pip install, no API keys, and no orders are ever placed.
 
 ## Install (Mac)
 
-1. Unzip `week-trader.zip` into your home folder, so you have `~/week-trader`.
-2. In Terminal:
-   ```
-   cd ~/day-trading
-   claude
-   ```
-3. Inside Claude Code:
-   ```
-   /plugin marketplace add /Users/YOUR-MAC-USERNAME/week-trader
-   /plugin install week-trader@week-trader
-   /reload-plugins
-   ```
-4. Then: `/week-trader:week`. The first run asks for your account size and risk
-   per trade, checks the data, and downloads 5 years of prices (a few minutes).
+Inside Claude Code (start it from your trading folder, e.g. `cd ~/day-trading && claude`):
+
+```
+/plugin marketplace add AlexBIL01/week-trader
+/plugin install week-trader@week-trader
+/reload-plugins
+```
+
+Then run `/week-trader:week`. The first run asks for your account size and risk
+per trade, checks the data, and downloads 5 years of prices (a few minutes).
+
+To update later: `/plugin marketplace update week-trader`.
 
 ## Settings
 
