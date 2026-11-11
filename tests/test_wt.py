@@ -164,6 +164,39 @@ class Signals(Base):
         self.assertEqual(self.wt.signals_at(b, ind, 259, self.cfg, "US", None), [])
 
 
+class Momentum(Base):
+    def test_week_ends(self):
+        days = ["2026-11-09", "2026-11-10", "2026-11-13", "2026-11-16", "2026-11-20"]
+        self.assertEqual(self.wt.week_ends(days), {"2026-11-13", "2026-11-20"})
+        self.assertEqual(self.wt.week_ends(days[:4]), {"2026-11-13"})   # last day is a Monday: not a week end yet
+
+    def test_leaders_pick_strongest(self):
+        data = {}
+        for k, s in enumerate(["AAA", "BBB", "CCC"]):
+            b = flat_bars(300)
+            for i in range(300):
+                b["c"][i] = b["o"][i] = 50 * (1 + 0.001 * (k + 1)) ** i
+                b["h"][i], b["l"][i] = b["c"][i] * 1.01, b["c"][i] * 0.99
+            data[s] = b
+        self.cfg["momentum_top"] = 2
+        lead = self.wt.momentum_leaders(data, self.cfg, "US", data["AAA"]["d"])
+        last_week_end = max(lead)
+        self.assertEqual(lead[last_week_end], {"BBB", "CCC"})
+
+    def test_momentum_holds_to_time_exit_no_target(self):
+        b = flat_bars(260)
+        for i in range(250, 260):
+            b["o"][i], b["h"][i], b["l"][i], b["c"][i] = 100 + i - 250, 120, 99, 101 + i - 250
+        self.cfg["costs"]["US"] = {"commission": 0, "slippage_bps": 0}
+        t = self.wt.simulate(b, self.wt.indicators(b), 249, "momentum", self.cfg, "US")
+        self.assertEqual(t["reason"], "time (end of week)")
+        self.assertIsNone(t["target"])
+
+    def test_beats_baseline_rule(self):
+        st = {"n": 100, "avg_R": 0.3, "profit_factor": 1.5, "avg_ret": 0.001}
+        self.assertTrue(self.wt.verdict(st, {"n": 60, "avg_R": 0.2}, {"n": 40, "avg_R": 0.2}).startswith("edge"))
+
+
 class Sizing(Base):
     def test_risk_sizing_aud_account_us_stock(self):
         # A$10,000, 1% = A$100 risk. Entry 50, stop 48 -> US$2/share = A$3/share -> 33 shares.
@@ -226,6 +259,7 @@ class EndToEnd(unittest.TestCase):
         with open(os.path.join(self.home, "stats_US.json")) as f:
             st = json.load(f)
         self.assertGreater(st["setups"]["pullback"]["all"]["n"], 30)
+        self.assertGreater(st["setups"]["momentum"]["all"]["n"], 30)
 
     def test_2_week_report(self):
         code, out = self.run_cli("week")

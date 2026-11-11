@@ -34,7 +34,7 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 HOME = os.environ.get("WT_HOME") or os.path.join(os.getcwd(), "weektrader")
 OFFLINE_DIR = os.environ.get("WT_OFFLINE_DIR")  # tests and demos: read <dir>/<SYMBOL>.json
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) week-trader/" + VERSION
@@ -50,7 +50,9 @@ SETUPS = {
     "breakout": "Closes at a new 20-day high on at least 1.5x normal volume, in an uptrend (above its 50-day average), near the top of the day's range.",
     "pullback": "In a long uptrend (above its 200-day average) but sold off hard for a day or two (2-day RSI under 10). Sells when it closes back above its 5-day average.",
     "gapgo": "Opens at least 3% above yesterday's close and holds it (closes above the open) on at least 2x normal volume.",
+    "momentum": "One of the strongest stocks in its market over the last 6 months, in an uptrend, while the market index is up. Bought at Monday's open, sold at Friday's close.",
 }
+NO_TARGET = {"pullback", "momentum"}
 
 UNIVERSE = {
     "US": """AAPL MSFT NVDA AMZN GOOGL META TSLA AVGO AMD NFLX ADBE CRM ORCL INTC QCOM MU AMAT LRCX
@@ -85,6 +87,9 @@ DEFAULT_CONFIG = {
     "regime_filter": True,
     "watchlist": {"US": [], "ASX": []},
     "top_n": 5,
+    "momentum_top": 10,
+    "momentum_lookback": 126,
+    "momentum_stop_atr": 3.0,
 }
 
 
@@ -311,7 +316,7 @@ def regime_map(index_bars):
 
 # ---------------------------------------------------------------- setups
 
-def signals_at(b, ind, i, cfg, market, regime=None):
+def signals_at(b, ind, i, cfg, market, regime=None, sym=None, leaders=None):
     """Setups that fired at the close of bar i (enter at the next open)."""
     if i < 200 or ind["atr"][i] is None or ind["sma200"][i] is None:
         return []
@@ -329,12 +334,49 @@ def signals_at(b, ind, i, cfg, market, regime=None):
         out.append("pullback")
     if reg and o[i] >= c[i - 1] * 1.03 and c[i] > o[i] and rv >= 2.0 and c[i] > ind["sma200"][i]:
         out.append("gapgo")
+    if reg and leaders and sym and sym in leaders.get(b["d"][i], ()):
+        out.append("momentum")
     return out
 
 
+def week_ends(dates, today=None):
+    """Dates that are the last trading day of their week. The final date counts only if it is a Friday."""
+    out = set()
+    for k, d in enumerate(dates):
+        day = dt.date.fromisoformat(d)
+        if k + 1 < len(dates):
+            if dt.date.fromisoformat(dates[k + 1]).isocalendar()[:2] != day.isocalendar()[:2]:
+                out.add(d)
+        elif day.weekday() == 4:
+            out.add(d)
+    return out
+
+
+def momentum_leaders(data, cfg, market, calendar, only_last=False):
+    """date -> set of the top `momentum_top` symbols by `momentum_lookback`-day return, among liquid stocks above their 50- and 200-day averages."""
+    lb, top = cfg["momentum_lookback"], cfg["momentum_top"]
+    ends = week_ends(calendar)
+    if only_last:
+        ends = {max(ends)} if ends else set()
+    scores = {d: [] for d in ends}
+    for s, b in data.items():
+        ind = b.get("_ind") or indicators(b)
+        c = b["c"]
+        for i, d in enumerate(b["d"]):
+            if d not in scores or i < max(lb, 200):
+                continue
+            if c[i] < cfg["min_price"][market] or (ind["dv20"][i] or 0) < cfg["min_dollar_volume"][market]:
+                continue
+            if ind["sma50"][i] is None or ind["sma200"][i] is None or c[i] <= ind["sma50"][i] or c[i] <= ind["sma200"][i]:
+                continue
+            scores[d].append((c[i] / c[i - lb] - 1, s))
+    return {d: {s for _, s in sorted(v, reverse=True)[:top]} for d, v in scores.items() if v}
+
+
 def levels(setup, entry, atr_val, cfg):
-    stop = entry - cfg["stop_atr"] * atr_val
-    target = entry + cfg["target_atr"] * atr_val
+    k = cfg["momentum_stop_atr"] if setup == "momentum" else cfg["stop_atr"]
+    stop = entry - k * atr_val
+    target = None if setup in NO_TARGET else entry + cfg["target_atr"] * atr_val
     return stop, target
 
 
@@ -365,9 +407,9 @@ def simulate(b, ind, i, setup, cfg, market):
             exit_px, reason = o, "stop (gap)"
         elif l <= stop:
             exit_px, reason = stop, "stop"
-        elif setup != "pullback" and j > i + 1 and o >= target:
+        elif target is not None and j > i + 1 and o >= target:
             exit_px, reason = o, "target (gap)"
-        elif setup != "pullback" and h >= target:
+        elif target is not None and h >= target:
             exit_px, reason = target, "target"
         elif setup == "pullback" and ind["sma5"][j] is not None and c > ind["sma5"][j]:
             exit_px, reason = c, "back above 5-day avg"
@@ -382,7 +424,7 @@ def simulate(b, ind, i, setup, cfg, market):
     ret = exit_net / entry - 1 - comm
     risk = (entry - stop) / entry
     return {"setup": setup, "signal_date": b["d"][i], "entry_date": b["d"][i + 1], "exit_date": b["d"][j],
-            "entry": round(entry, 4), "stop": round(stop, 4), "target": round(target, 4),
+            "entry": round(entry, 4), "stop": round(stop, 4), "target": round(target, 4) if target else None,
             "exit": round(exit_net, 4), "reason": reason, "days": j - i, "ret": ret, "R": ret / risk,
             "exit_index": j}
 
@@ -456,17 +498,21 @@ def load_market(market, cfg, symbols=None, quiet=False, refresh=False):
 
 def backtest_market(market, cfg, data, idx, setups=None, symbol=None):
     reg = regime_map(idx) if idx else None
+    for b in data.values():
+        b["_ind"] = indicators(b)
+    calendar = idx["d"] if idx else sorted({d for b in data.values() for d in b["d"]})
+    leaders = momentum_leaders(data, cfg, market, calendar) if (not setups or "momentum" in setups) else None
     trades = []
     for s, b in data.items():
         if symbol and s.upper() != symbol.upper():
             continue
-        ind = indicators(b)
+        ind = b["_ind"]
         busy_until = {}
         for i in range(200, len(b["c"]) - 1):
-            for setup in signals_at(b, ind, i, cfg, market, reg):
+            for setup in signals_at(b, ind, i, cfg, market, reg, s, leaders):
                 if setups and setup not in setups:
                     continue
-                if i <= busy_until.get(setup, -1):
+                if i < busy_until.get(setup, -1):
                     continue
                 t = simulate(b, ind, i, setup, cfg, market)
                 if not t or t.get("open"):
@@ -476,8 +522,9 @@ def backtest_market(market, cfg, data, idx, setups=None, symbol=None):
                 busy_until[setup] = t["exit_index"]
                 trades.append(t)
     result = {"market": market, "generated": dt.datetime.now().isoformat(timespec="seconds"),
-              "symbols": len(data), "config": {k: cfg[k] for k in ("hold_days", "stop_atr", "target_atr", "regime_filter")},
+              "symbols": len(data), "config": stats_key(cfg),
               "setups": {}, "baseline": baseline(data, cfg, market)}
+    base = result["baseline"].get("avg_ret")
     for setup in (setups or SETUPS):
         ts = [t for t in trades if t["setup"] == setup]
         first, second = split_halves(ts)
@@ -485,9 +532,12 @@ def backtest_market(market, cfg, data, idx, setups=None, symbol=None):
         by_sym = {}
         for t in ts:
             by_sym.setdefault(t["symbol"], []).append(t)
+        v = verdict(st, s1, s2)
+        if base is not None and st.get("n") and not v.startswith(("no edge", "not enough")) and st["avg_ret"] <= base:
+            v = "no edge: no better than buying any stock for the week"
         result["setups"][setup] = {
             "all": st, "first_two_thirds": s1, "recent_third": s2,
-            "verdict": verdict(st, s1, s2),
+            "verdict": v,
             "by_symbol": {k: stats(v) for k, v in by_sym.items()},
             "recent_trades": sorted(({k: v for k, v in t.items() if k != "exit_index"} for t in ts),
                                     key=lambda t: t["signal_date"])[-15:],
@@ -511,10 +561,17 @@ def baseline(data, cfg, market):
     return {"n": len(rets), "avg_ret": sum(rets) / len(rets), "win_rate": sum(1 for r in rets if r > 0) / len(rets)}
 
 
+def stats_key(cfg):
+    keys = ("hold_days", "stop_atr", "target_atr", "regime_filter", "momentum_top", "momentum_lookback", "momentum_stop_atr")
+    d = {k: cfg[k] for k in keys}
+    d["engine"] = VERSION
+    return d
+
+
 def market_stats(market, cfg, data=None, idx=None, refresh=False, quiet=False):
     p = path("stats_%s.json" % market)
     cached = load_json(p)
-    if cached and not refresh and cached.get("config") == {k: cfg[k] for k in ("hold_days", "stop_atr", "target_atr", "regime_filter")}:
+    if cached and not refresh and cached.get("config") == stats_key(cfg):
         age = dt.datetime.now() - dt.datetime.fromisoformat(cached["generated"])
         if age < dt.timedelta(hours=20):
             return cached
@@ -574,13 +631,14 @@ def make_plan(symbol, market, b, ind, setup, cfg, entry=None, stat=None):
         "symbol": symbol, "market": market, "currency": cur, "setup": setup,
         "why": SETUPS[setup], "signal_date": b["d"][i], "last_close": round(b["c"][i], 4),
         "entry": round(est_entry, 4), "entry_note": "buy at the next open (" + entry_day.isoformat() + "); the price used is the last close, so the real fill will differ",
-        "stop": round(stop, 4), "target": round(target, 4) if setup != "pullback" else None,
+        "stop": round(stop, 4), "target": round(target, 4) if target else None,
         "exit_rule": ("sell when it closes back above its 5-day average (about %.2f now), or at the stop" % ind["sma5"][i])
-        if setup == "pullback" else "sell at the target or the stop, whichever comes first",
+        if setup == "pullback" else ("hold for the week; sell only at the stop" if setup == "momentum"
+                                     else "sell at the target or the stop, whichever comes first"),
         "sell_by": sell_by.isoformat(), "sell_by_note": "if neither has happened, sell at the close on this day",
         "atr": round(a, 4), "shares": sz["shares"], "position_aud": round(sz["value_aud"], 2),
         "risk_aud": round(sz["risk_aud"], 2), "max_risk_aud": round(sz["max_risk_aud"], 2),
-        "reward_aud": round(sz["shares"] * (target - est_entry) * sz["fx_aud_per_unit"], 2) if setup != "pullback" else None,
+        "reward_aud": round(sz["shares"] * (target - est_entry) * sz["fx_aud_per_unit"], 2) if target else None,
         "commission_round_trip": "%s %.2f" % (cur, 2 * comm), "notes": sz["notes"],
     }
     if stat:
@@ -594,7 +652,7 @@ def score_signal(setup_res, symbol):
     allst = setup_res["all"]
     if allst.get("n", 0) < 30:
         return None, "not enough history for this setup"
-    if setup_res["verdict"] == "no edge":
+    if setup_res["verdict"].startswith("no edge"):
         return None, "this setup has not made money on this market"
     score = allst["avg_R"]
     if not setup_res["verdict"].startswith("edge"):
@@ -612,11 +670,13 @@ def scan_market(market, cfg, refresh=False, quiet=False):
     regime_now = None
     if idx:
         regime_now = reg.get(idx["d"][-1])
+    calendar = idx["d"] if idx else sorted({d for b in data.values() for d in b["d"]})
+    leaders = momentum_leaders(data, cfg, market, calendar, only_last=True)
     found = []
     for s, b in data.items():
-        ind = indicators(b)
+        ind = b.get("_ind") or indicators(b)
         i = len(b["c"]) - 1
-        for setup in signals_at(b, ind, i, cfg, market, reg):
+        for setup in signals_at(b, ind, i, cfg, market, reg, s, leaders):
             sres = st["setups"][setup]
             score, why = score_signal(sres, s)
             sym = sres["by_symbol"].get(s)
@@ -797,8 +857,9 @@ def cmd_backtest(a):
             last = max(b["d"][-1] for b in data.values())
             span = " · signals %s to %s" % (first, last)
         print("\n## %s — %d stocks%s" % (MARKETS[m]["label"], len(data), span))
-        print("Rules: hold up to %d trading days, stop %.1f ATR, target %.1f ATR, market filter %s, costs included.\n" % (
-            cfg["hold_days"], cfg["stop_atr"], cfg["target_atr"], "on" if cfg["regime_filter"] else "off"))
+        print("Rules: hold up to %d trading days, stop %.1f ATR, target %.1f ATR (momentum: top %d by %d-day return, stop %.1f ATR, no target), market filter %s, costs included.\n" % (
+            cfg["hold_days"], cfg["stop_atr"], cfg["target_atr"], cfg["momentum_top"], cfg["momentum_lookback"],
+            cfg["momentum_stop_atr"], "on" if cfg["regime_filter"] else "off"))
         print(setup_table(res))
         if failed:
             print("\nSkipped %d: %s" % (len(failed), ", ".join(failed[:12]) + (" …" if len(failed) > 12 else "")))

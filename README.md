@@ -42,6 +42,7 @@ To update later: `/plugin marketplace update week-trader`.
 | `max_open_trades` | 4 | the weekly report won't suggest more than this |
 | `hold_days` | 5 | sell by the close of this trading day |
 | `stop_atr` / `target_atr` | 1.5 / 3.0 | stop and target distance in ATR(14) |
+| `momentum_top` / `momentum_lookback` / `momentum_stop_atr` | 10 / 126 / 3.0 | momentum leaders: how many, ranked on how many days' return, stop distance |
 | `costs` | US $0 + 5 bps, ASX $5 + 10 bps | commission per side and slippage |
 | `aud_per_usd` | live | fixed AUD/USD rate if set |
 | `watchlist` | empty | extra symbols: `{"US": ["HIMS"], "ASX": ["CXO"]}` |
