@@ -34,7 +34,7 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 HOME = os.environ.get("WT_HOME") or os.path.join(os.getcwd(), "weektrader")
 OFFLINE_DIR = os.environ.get("WT_OFFLINE_DIR")  # tests and demos: read <dir>/<SYMBOL>.json
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) week-trader/" + VERSION
@@ -99,6 +99,12 @@ DEFAULT_CONFIG = {
     "climb_down_atr": 1.0,
     "climb_horizon": 5,
     "climb_epochs": 40,
+    "sec_user_agent": "",
+    "insider_quarters": 12,
+    "insider_min_value": 25000,
+    "insider_min_price": 3.0,
+    "insider_min_dollar_volume": 1000000,
+    "insider_max_tickers": 800,
 }
 
 
@@ -1082,6 +1088,212 @@ def cmd_predict(a):
         print("\nNot financial advice. Paper trade picks first: log them with `journal add SYMBOL --setup climb ...`.")
 
 
+# ---------------------------------------------------------------- forward tests
+
+# Rules frozen on the date they were registered. They are judged only on trading days AFTER that date,
+# so the result cannot have been tuned to it. Never edit a registered rule: add a new one with a new id.
+FORWARD_RULES = [
+    {"id": "us_quiet_buying", "market": "US", "feature": "vol_trend", "side": "high", "registered": "2026-11-11",
+     "desc": "US stocks in the top fifth for volume last week vs the last 2 months (\"quiet buying\")",
+     "origin": "t 3.1 on the climb predictor's unseen weeks, 2026-11-11"},
+    {"id": "asx_oversold", "market": "ASX", "feature": "rsi2", "side": "low", "registered": "2026-11-11",
+     "desc": "ASX stocks in the bottom fifth for 2-day RSI (short-term oversold)",
+     "origin": "t 2.2 on the climb predictor's unseen weeks, 2026-11-11"},
+]
+
+
+def forward_eval(rule, data, idx, cfg, horizon=5):
+    pm = _predict_mod()
+    j = pm.NAMES.index(rule["feature"])
+    idx_close = dict(zip(idx["d"], idx["c"])) if idx else {}
+    market = rule["market"]
+    cal = [d for d in (idx["d"] if idx else sorted({d for b in data.values() for d in b["d"]})) if d > rule["registered"]]
+    pos = {s: {d: i for i, d in enumerate(b["d"])} for s, b in data.items()}
+    for b in data.values():
+        pm.extra_indicators(b, _helpers())
+
+    def cross_section(d):
+        rows = []
+        for s, b in data.items():
+            i = pos[s].get(d)
+            if i is None or b["c"][i] < cfg["min_price"][market] or (b["_ind"]["dv20"][i] or 0) < cfg["min_dollar_volume"][market]:
+                continue
+            f = pm.features_at(b, b["_ind"], i, idx_close)
+            if f is not None:
+                rows.append((s, f[j], i))
+        if len(rows) < 10:
+            return None, rows
+        vals = sorted(r[1] for r in rows)
+        cut = vals[(4 * len(vals)) // 5] if rule["side"] == "high" else vals[len(vals) // 5]
+        picks = [r for r in rows if (r[1] >= cut if rule["side"] == "high" else r[1] <= cut)]
+        return picks, rows
+
+    weeks = []
+    for d in cal[::horizon]:
+        picks, rows = cross_section(d)
+        if not picks:
+            continue
+        frs = {}
+        for s, _, i in rows:
+            b = data[s]
+            if i + horizon < len(b["c"]):
+                frs[s] = b["c"][i + horizon] / b["o"][i + 1] - 1
+        if len(frs) < 10:
+            continue  # this week has not finished yet
+        avg = sum(frs.values()) / len(frs)
+        pk = [frs[s] - avg for s, _, _ in picks if s in frs]
+        if pk:
+            weeks.append({"date": d, "excess": sum(pk) / len(pk), "picks": len(pk)})
+    latest = cal[-1] if cal else (idx["d"][-1] if idx else None)
+    today_picks = []
+    if latest:
+        p, _ = cross_section(latest)
+        today_picks = sorted((r[0] for r in (p or [])))
+    ex = [w["excess"] for w in weeks]
+    t = pm.tstat(ex) if len(ex) >= 3 else 0.0
+    mean = sum(ex) / len(ex) if ex else None
+    if len(ex) < 26:
+        verdict = "collecting: %d of 26 weeks needed" % len(ex)
+    elif t >= 2 and mean > 0:
+        verdict = "confirmed on new data"
+    elif mean is not None and mean > 0:
+        verdict = "positive but not significant yet"
+    else:
+        verdict = "failed on new data"
+    return {"rule": rule, "weeks": weeks, "n": len(ex), "mean": mean, "t": t, "verdict": verdict,
+            "latest": latest, "today": today_picks}
+
+
+def forward_lines(cfg, markets, loaded=None):
+    L = []
+    for rule in FORWARD_RULES:
+        if rule["market"] not in markets:
+            continue
+        if loaded and rule["market"] in loaded:
+            data, idx = loaded[rule["market"]]
+        else:
+            data, idx, _ = load_market(rule["market"], cfg)
+        r = forward_eval(rule, data, idx, cfg)
+        L.append("- **%s** (locked %s): %s. %s" % (
+            rule["desc"], rule["registered"], r["verdict"],
+            ("Average vs the average stock: %+.2f%% per 5 days over %d week%s (t %.1f)." % (
+                100 * r["mean"], r["n"], "" if r["n"] == 1 else "s", r["t"])) if r["n"] else "No completed weeks yet."))
+        if r["today"]:
+            L.append("  Signal on %s (watch only, %d stocks): %s" % (r["latest"], len(r["today"]), ", ".join(r["today"][:25])))
+    return L
+
+
+def cmd_forward(a):
+    cfg = load_config()
+    ms = markets_arg(a.market, cfg)
+    print("## Forward tests: rules locked in advance, judged only on new trading days\n")
+    print("\n".join(forward_lines(cfg, ms)))
+    print("\nA rule needs 26+ completed weeks and t >= 2 to be confirmed. Nothing to log: run this any time.")
+
+
+# ---------------------------------------------------------------- insider buying (US)
+
+def _insider_mod():
+    _predict_mod()  # puts the engine folder on sys.path
+    import insider
+    return insider
+
+
+def cmd_insider(a):
+    ins = _insider_mod()
+    cfg = load_config()
+    ua = (cfg.get("sec_user_agent") or os.environ.get("SEC_USER_AGENT") or "").strip()
+    if "@" not in ua:
+        raise WTError("the SEC asks for a name and email with every download. Add it to weektrader/config.json, e.g. "
+                      "\"sec_user_agent\": \"Jane Citizen jane@example.com\" (or set SEC_USER_AGENT), then rerun.")
+    tty = sys.stderr.isatty()
+    folder = path("sec")
+    purchases, used = [], []
+    for q in ins.quarters_back(a.quarters or cfg["insider_quarters"]):
+        cache = os.path.join(folder, q + ".json")
+        rows = None if a.refresh else load_json(cache)
+        if rows is None:
+            if tty:
+                sys.stderr.write("  SEC insider data %s ...\n" % q)
+            if OFFLINE_DIR and not os.path.exists(os.path.join(folder, q + ".zip")):
+                continue
+            try:
+                zp = ins.download_quarter(q, folder, ua)
+            except ins.InsiderError as e:
+                raise WTError(str(e))
+            if not zp:
+                continue  # not published yet
+            try:
+                rows = ins.purchases_from_zip(zp)
+            except (ins.InsiderError, KeyError, OSError) as e:
+                raise WTError("could not read %s: %s" % (q, e))
+            save_json(cache, rows)
+        used.append(q)
+        purchases += rows
+    if not purchases:
+        raise WTError("no insider data could be downloaded")
+    events = ins.events_from_purchases(purchases, cfg["insider_min_value"], cfg["insider_min_price"])
+    by_t = {}
+    for e in events:
+        by_t.setdefault(e["ticker"], []).append(e)
+    tickers = sorted(by_t, key=lambda t: (-len(by_t[t]), -sum(e["value"] for e in by_t[t])))[:cfg["insider_max_tickers"]]
+    prices, failed = {}, 0
+    for k, t in enumerate(tickers):
+        if tty:
+            sys.stderr.write("\r  prices %d/%d %-8s" % (k + 1, len(tickers), t))
+        try:
+            prices[t] = fetch(t, "US", rng="5y")
+        except WTError:
+            failed += 1
+    if tty:
+        sys.stderr.write("\r" + " " * 40 + "\r")
+    spy = fetch("SPY", "US", rng="5y")
+    rows = ins.measure([e for e in events if e["ticker"] in prices], prices, spy,
+                       min_dollar_volume=cfg["insider_min_dollar_volume"])
+    res = {"generated": dt.datetime.now().isoformat(timespec="seconds"), "quarters": sorted(used),
+           "events_total": len(events), "tickers_priced": len(prices), "tickers_failed": failed, "horizons": {}}
+    sp = lambda x: "—" if x is None else "%+.2f%%" % (100 * x)
+    L = ["## Insider buying test (US)",
+         "Source: SEC Insider Transactions Data Sets, quarters %s to %s. Event = officers/directors buying their own company's shares on the open market, US$%s+ on one filing date, share price US$%.0f+." % (
+             min(used), max(used), format(int(cfg["insider_min_value"]), ","), cfg["insider_min_price"]),
+         "%d events across %d companies; %d could be measured (prices found, average daily trading US$%s+)." % (
+             len(events), len(by_t), len(rows), format(int(cfg["insider_min_dollar_volume"]), ",")),
+         "Buy at the open after the filing date; compare with SPY over the same days. t uses one average per week.", ""]
+    for h in (5, 21):
+        s_ = ins.summarise(rows, h)
+        v = ins.verdict(s_)
+        res["horizons"][h] = {"summary": s_, "verdict": v, "subgroups": ins.subgroups(rows, h)}
+        if not s_.get("weeks"):
+            L.append("**%d days: no measurable events.**" % h)
+            continue
+        L += ["### Hold %d trading days: %s" % (h, v),
+              "- %d events over %d weeks · average vs SPY %s per trade · beat SPY %.0f%% of the time · weekly t %.1f" % (
+                  s_["events"], s_["weeks"], sp(s_["avg_excess"]), 100 * s_["beat_spy_rate"], s_["t"]),
+              "- Older 2/3 of weeks: %s (t %.1f) · newest 1/3: %s (t %.1f)" % (sp(s_["older_avg"]), s_["older_t"], sp(s_["recent_avg"]), s_["recent_t"]),
+              "", "| group | events | avg vs SPY | t |", "|---|---|---|---|"]
+        for g, gs in res["horizons"][h]["subgroups"].items():
+            if gs.get("weeks"):
+                L.append("| %s | %d | %s | %.1f |" % (g, gs["events"], sp(gs["weekly_avg"]), gs["t"]))
+        L.append("")
+    last_q_end = max(e["filed"] for e in events)
+    recent = [e for e in events if e["filed"] >= (dt.date.fromisoformat(last_q_end) - dt.timedelta(days=21)).isoformat()]
+    recent.sort(key=lambda e: -e["value"])
+    L += ["### Most recent insider buys in the data (to %s)" % last_q_end,
+          "The SEC publishes this data quarterly, so these are weeks to months old: context, not signals."]
+    for e in recent[:15]:
+        L.append("- %s %s (%s): US$%s by %d insider%s" % (e["filed"], e["ticker"], e["issuer"][:40], format(int(e["value"]), ","),
+                                                          e["n_insiders"], "" if e["n_insiders"] == 1 else "s"))
+    L += ["", "Subgroups are listed for interest: with 5 groups x 2 horizons, one may pass t 2 by chance. The verdict uses all events.",
+          "Not financial advice."]
+    save_json(path("insider_report.json"), res)
+    rp = path("reports", "insider-%s.md" % dt.date.today().isoformat())
+    os.makedirs(os.path.dirname(rp), exist_ok=True)
+    with open(rp, "w") as f:
+        f.write("\n".join(L) + "\n")
+    print("\n".join(L))
+    print("\nSaved: %s" % rp)
+
+
 def cmd_week(a):
     cfg = load_config()
     top_n = a.top or cfg["top_n"]
@@ -1101,9 +1313,11 @@ def cmd_week(a):
     md.append("")
     # 2. what to buy
     candidates, notes = [], []
+    scanned = {}
     open_n = len(sells)
     for m in markets_arg(a.market, cfg):
         r = scan_market(m, cfg, refresh=a.refresh)
+        scanned[m] = r
         md.append("## %s — data to %s · market %s" % (MARKETS[m]["label"], r["as_of"], "UP" if r["regime_up"] else "DOWN"))
         md.append("")
         md.append(setup_table(r["stats"]))
@@ -1156,6 +1370,13 @@ def cmd_week(a):
     if len(candidates) > len(picks):
         md.append("Also qualified but not picked: " + ", ".join("%s (%s %s, %.2f)" % (c["symbol"], c["market"], c["setup"], c["score"]) for c in candidates[len(picks):len(picks) + 8]))
         md.append("")
+    try:
+        loaded = {k: (v["data"], v["idx"]) for k, v in scanned.items()}
+        fl = forward_lines(cfg, list(scanned), loaded)
+        if fl:
+            md += ["## Forward tests (locked rules, new data only)"] + fl + [""]
+    except Exception as e:  # never let the forward section break the weekly report
+        notes.append("forward tests skipped: %s" % e)
     if notes:
         md.append("## Notes")
         md += ["- " + n for n in notes]
@@ -1258,6 +1479,8 @@ def main(argv=None):
     p.add_argument("--no-regime", action="store_true"); p.add_argument("--refresh", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_backtest)
     p = sub.add_parser("predict"); p.add_argument("--market", default="both"); p.add_argument("--top", type=int)
     p.add_argument("--retrain", action="store_true"); p.add_argument("--refresh", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_predict)
+    p = sub.add_parser("forward"); p.add_argument("--market", default="both"); p.set_defaults(fn=cmd_forward)
+    p = sub.add_parser("insider"); p.add_argument("--quarters", type=int); p.add_argument("--refresh", action="store_true"); p.set_defaults(fn=cmd_insider)
     p = sub.add_parser("plan"); p.add_argument("symbol"); p.add_argument("--market"); p.add_argument("--setup", choices=list(SETUPS)); p.add_argument("--entry", type=float)
     p.add_argument("--refresh", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_plan)
     p = sub.add_parser("journal"); p.add_argument("action", choices=["add", "close", "list", "review", "stats"]); p.add_argument("symbol", nargs="?")

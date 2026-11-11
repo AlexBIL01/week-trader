@@ -5,7 +5,7 @@ month, for monthly momentum), test
 every rule on five years of history before trusting it, size each trade in
 Australian dollars, and keep an honest journal.
 
-Six Claude Code skills, one standard-library Python engine (`engine/wt.py`).
+Eight Claude Code skills, one standard-library Python engine (`engine/wt.py`).
 Nothing to pip install, no API keys, and no orders are ever placed.
 
 | command | what it does |
@@ -14,6 +14,8 @@ Nothing to pip install, no API keys, and no orders are ever placed.
 | `/week-trader:scan` | Today's signals on US and ASX stocks, ranked by backtested edge |
 | `/week-trader:backtest` | Tests the setups on 5 years of data with costs, vs a buy-any-day baseline |
 | `/week-trader:predict` | Climb predictor: rates every stock on how likely it is to beat the average stock over the next 5 days, graded on weeks it never saw |
+| `/week-trader:forward` | Forward tests: rules locked on 2026-11-11 (US quiet buying, ASX oversold), judged only on new weeks |
+| `/week-trader:insider` | US insider buying: SEC data on every officer/director purchase, tested against SPY over 5 and 21 days |
 | `/week-trader:plan` | Entry, stop, target, sell-by date and share count in AUD for one stock |
 | `/week-trader:journal` | Logs trades, says when to sell, tracks your real win rate and profit |
 
@@ -48,6 +50,8 @@ To update later: `/plugin marketplace update week-trader`.
 | `month_hold_days` / `momentum_month_stop_atr` | 21 / 5.0 | monthly momentum: holding period and stop distance |
 | `costs` | US $0 + 5 bps, ASX $5 + 10 bps | commission per side and slippage |
 | `aud_per_usd` | live | fixed AUD/USD rate if set |
+| `sec_user_agent` | empty | your name and email, required by the SEC for insider data |
+| `insider_quarters` / `insider_min_value` | 12 / 25000 | insider test: quarters of history, minimum purchase in US$ |
 | `watchlist` | empty | extra symbols: `{"US": ["HIMS"], "ASX": ["CXO"]}` |
 
 ## Tests
