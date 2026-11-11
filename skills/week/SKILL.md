@@ -47,6 +47,8 @@ python3 "$WT" week --refresh                    # ignore cached prices
      avg R"). Say plainly when the verdict is "weak".
    - Momentum leaders only appear when the data ends on a Friday, so the weekly run
      is best done after Friday's close.
+   - **Climb predictor** sections (one per market): give the verdict first. Only call
+     stocks "predicted to climb" when the verdict is "works"; otherwise they are watch only.
    - If there are no picks, say so as a good result: no setup with a proven edge
      fired. Never invent a pick or loosen the rules to produce one.
 3. Remind the user once: paper trade first, prices are from the last close, and the

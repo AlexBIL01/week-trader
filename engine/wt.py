@@ -34,7 +34,7 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 HOME = os.environ.get("WT_HOME") or os.path.join(os.getcwd(), "weektrader")
 OFFLINE_DIR = os.environ.get("WT_OFFLINE_DIR")  # tests and demos: read <dir>/<SYMBOL>.json
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) week-trader/" + VERSION
@@ -53,6 +53,8 @@ SETUPS = {
     "momentum": "One of the strongest stocks in its market over the last 6 months, in an uptrend, while the market index is up. Bought at Monday's open, sold at Friday's close.",
     "momentum_month": "Same as momentum, but picked at the end of each month and held for about a month (21 trading days), so brokerage is paid 12 times a year instead of 52.",
 }
+SIGNAL_SETUPS = list(SETUPS)
+SETUPS["climb"] = "The climb predictor rates it among the stocks most likely to rise more than the average stock over the next 5 trading days, from 13 warning signs, using a model graded on weeks it never saw."
 NO_TARGET = {"pullback", "momentum", "momentum_month"}
 
 UNIVERSE = {
@@ -93,10 +95,16 @@ DEFAULT_CONFIG = {
     "momentum_stop_atr": 3.0,
     "month_hold_days": 21,
     "momentum_month_stop_atr": 5.0,
+    "climb_up_atr": 2.0,
+    "climb_down_atr": 1.0,
+    "climb_horizon": 5,
+    "climb_epochs": 40,
 }
 
 
 def hold_for(setup, cfg):
+    if setup == "climb":
+        return cfg["climb_horizon"]
     return cfg["month_hold_days"] if setup == "momentum_month" else cfg["hold_days"]
 
 
@@ -403,6 +411,8 @@ def momentum_leaders(data, cfg, market, calendar, only_last=False, ends=None):
 
 
 def levels(setup, entry, atr_val, cfg):
+    if setup == "climb":
+        return entry - cfg["climb_down_atr"] * atr_val, entry + cfg["climb_up_atr"] * atr_val
     k = {"momentum": cfg["momentum_stop_atr"], "momentum_month": cfg["momentum_month_stop_atr"]}.get(setup, cfg["stop_atr"])
     stop = entry - k * atr_val
     target = None if setup in NO_TARGET else entry + cfg["target_atr"] * atr_val
@@ -554,7 +564,7 @@ def backtest_market(market, cfg, data, idx, setups=None, symbol=None):
               "symbols": len(data), "config": stats_key(cfg),
               "setups": {}, "baseline": baseline(data, cfg, market),
               "baseline_month": baseline(data, cfg, market, cfg["month_hold_days"])}
-    for setup in (setups or SETUPS):
+    for setup in (setups or SIGNAL_SETUPS):
         ts = [t for t in trades if t["setup"] == setup]
         first, second = split_halves(ts)
         st, s1, s2 = stats(ts), stats(first), stats(second)
@@ -726,7 +736,7 @@ def scan_market(market, cfg, refresh=False, quiet=False):
             })
     found.sort(key=lambda r: (r["score"] is None, -(r["score"] or 0)))
     return {"market": market, "regime_up": regime_now, "index": MARKETS[market]["index"],
-            "as_of": idx["d"][-1] if idx else None, "signals": found, "failed": failed, "stats": st, "data": data}
+            "as_of": idx["d"][-1] if idx else None, "signals": found, "failed": failed, "stats": st, "data": data, "idx": idx}
 
 
 # ---------------------------------------------------------------- journal
@@ -883,7 +893,7 @@ def cmd_backtest(a):
         cfg["regime_filter"] = False
     setups = [a.setup] if a.setup else None
     if a.setup and a.setup not in SETUPS:
-        raise WTError("setup must be one of: " + ", ".join(SETUPS))
+        raise WTError("setup must be one of: " + ", ".join(SIGNAL_SETUPS))
     out = {}
     for m in markets_arg(a.market, cfg):
         syms = [a.symbol.upper().replace(".AX", "")] if a.symbol else None
@@ -967,6 +977,111 @@ def cmd_plan(a):
         print("  (run backtest first to see how this setup has done)")
 
 
+# ---------------------------------------------------------------- climb predictor
+
+def _predict_mod():
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import predict
+    return predict
+
+
+def _helpers():
+    import types
+    return types.SimpleNamespace(indicators=indicators, sma=sma, atr=atr)
+
+
+def climb_key(cfg):
+    d = {k: cfg[k] for k in ("climb_up_atr", "climb_down_atr", "climb_horizon", "climb_epochs", "history", "min_price", "min_dollar_volume")}
+    d["engine"] = VERSION
+    return d
+
+
+def climb_model(market, cfg, data, idx, refresh=False):
+    """Train (or load) the market's climb model and its grade on unseen data. Retrains weekly."""
+    pm = _predict_mod()
+    p = path("climb_%s.json" % market)
+    cached = load_json(p)
+    if cached and not refresh and cached.get("key") == climb_key(cfg):
+        age = dt.datetime.now() - dt.datetime.fromisoformat(cached["generated"])
+        if age < dt.timedelta(days=7):
+            return cached
+    if sys.stderr.isatty():
+        sys.stderr.write("  %s: training the climb model (a minute or two)...\n" % market)
+    rows = pm.build_rows(data, idx, cfg, market, _helpers())
+    res = pm.fit_and_grade(rows, cfg)
+    if res is None:
+        raise WTError("%s: not enough history to train the climb model" % market)
+    res["key"] = climb_key(cfg)
+    res["market"] = market
+    res["generated"] = dt.datetime.now().isoformat(timespec="seconds")
+    save_json(p, res)
+    return res
+
+
+def climb_section(market, cfg, data, idx, top_n, refresh=False):
+    """Markdown lines + plans for the market's climb predictions."""
+    pm = _predict_mod()
+    me = _helpers()
+    res = climb_model(market, cfg, data, idx, refresh=refresh)
+    t10, tr, te = res["top10"], res["train"], res["test"]
+    hz = cfg["climb_horizon"]
+    L = ["### Climb predictor — %s" % MARKETS[market]["label"],
+         "Question: which stocks will rise more than the average stock over the next %d trading days (buy at the next open, sell at the close)?" % hz,
+         "Trained on %s to %s; graded only on %s to %s (%d separate weeks it never saw)." % (tr["from"], tr["to"], te["from"], te["to"], te["weeks"]),
+         "**Verdict: %s.** AUC %.3f (0.5 = guessing)." % (res["verdict"], res["auc"]),
+         "Each tenth of stocks, ranked by the model, vs the average stock per %d days (best-rated first): %s" % (
+             hz, " · ".join("%+.2f%%" % (100 * d) for d in res["deciles_best_to_worst"] if d is not None)),
+         "", "Which warning signs came before a climb (unseen period; how much the top or bottom fifth beat the average stock per %d days):" % hz, "",
+         "| warning sign | high fifth | low fifth | t (better side) |", "|---|---|---|---|"]
+    sp = lambda x: "—" if x is None else "%+.2f%%" % (100 * x)
+    for f in res["features"]:
+        L.append("| %s | %s | %s | %.1f (%s) |" % (f["meaning"], sp(f["high_fifth_excess"]), sp(f["low_fifth_excess"]), f["t"], f["better_side"]))
+    today = pm.score_today(data, idx, res["model"], cfg, market, me)
+    plans = []
+    picks = [r for r in today if r["p"] >= t10["p_cutoff"]][:top_n]
+    L.append("")
+    if not today:
+        L.append("No stocks could be scored on the last close.")
+    elif res["works"] and picks:
+        L.append("**Predicted to climb (in the model's top 10%):**")
+    elif res["works"]:
+        L.append("No stock is in the model's top 10% today.")
+    else:
+        L.append("Highest-rated today (**watch only**: the model has not proven itself on unseen data):")
+        picks = today[:top_n]
+    for r in picks:
+        b = data[r["symbol"]]
+        ind = b["_ind"]
+        pl = make_plan(r["symbol"], market, b, ind, "climb", cfg)
+        pl["p_climb"] = r["p"]
+        pl["proven"] = bool(res["works"])
+        plans.append(pl)
+        cur = "A$" if market == "ASX" else "US$"
+        why = ", ".join("%s" % w["meaning"] for w in r["why"]) or "no single standout"
+        L.append("- **%s** model score %.0f%% (chance of beating the median stock; 50%% = no view) · close %s%.2f · buy %d share%s, stop %s%.2f, target %s%.2f, sell by %s · max loss A$%.2f · driven by: %s" % (
+            r["symbol"], 100 * r["p"], cur, pl["entry"], pl["shares"], "" if pl["shares"] == 1 else "s",
+            cur, pl["stop"], cur, pl["target"], pl["sell_by"], pl["risk_aud"], why))
+    return L, plans, res
+
+
+def cmd_predict(a):
+    cfg = load_config()
+    out = {}
+    for m in markets_arg(a.market, cfg):
+        data, idx, failed = load_market(m, cfg, refresh=a.refresh)
+        L, plans, res = climb_section(m, cfg, data, idx, a.top or 10, refresh=a.retrain or a.refresh)
+        out[m] = {"verdict": res["verdict"], "works": res["works"], "top10": res["top10"], "auc": res["auc"],
+                  "features": res["features"], "picks": plans}
+        if not a.json:
+            print("\n" + "\n".join(L))
+    if a.json:
+        print(json.dumps(out, indent=2, default=str))
+    else:
+        print("\nNot financial advice. Paper trade picks first: log them with `journal add SYMBOL --setup climb ...`.")
+
+
 def cmd_week(a):
     cfg = load_config()
     top_n = a.top or cfg["top_n"]
@@ -1008,6 +1123,11 @@ def cmd_week(a):
             candidates.append(p)
         if r["failed"]:
             notes.append("%s: skipped %d symbol(s) with no data." % (m, len(r["failed"])))
+        try:
+            cl, cplans, cres = climb_section(m, cfg, r["data"], r.get("idx"), top_n)
+            md += cl + [""]
+        except WTError as e:
+            notes.append(str(e))
     candidates = [c for c in candidates if c["shares"] > 0]
     candidates.sort(key=lambda c: -c["score"])
     slots = max(cfg["max_open_trades"] - open_n, 0)
@@ -1136,6 +1256,8 @@ def main(argv=None):
     p = sub.add_parser("backtest"); p.add_argument("--market", default="both"); p.add_argument("--setup"); p.add_argument("--symbol")
     p.add_argument("--hold-days", dest="hold_days", type=int); p.add_argument("--stop-atr", dest="stop_atr", type=float); p.add_argument("--target-atr", dest="target_atr", type=float)
     p.add_argument("--no-regime", action="store_true"); p.add_argument("--refresh", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_backtest)
+    p = sub.add_parser("predict"); p.add_argument("--market", default="both"); p.add_argument("--top", type=int)
+    p.add_argument("--retrain", action="store_true"); p.add_argument("--refresh", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_predict)
     p = sub.add_parser("plan"); p.add_argument("symbol"); p.add_argument("--market"); p.add_argument("--setup", choices=list(SETUPS)); p.add_argument("--entry", type=float)
     p.add_argument("--refresh", action="store_true"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_plan)
     p = sub.add_parser("journal"); p.add_argument("action", choices=["add", "close", "list", "review", "stats"]); p.add_argument("symbol", nargs="?")

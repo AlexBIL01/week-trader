@@ -218,6 +218,53 @@ class Momentum(Base):
         self.assertTrue(self.wt.verdict(st, {"n": 60, "avg_R": 0.2}, {"n": 40, "avg_R": 0.2}).startswith("edge"))
 
 
+def planted_walk(n, seed):
+    """Random walk where a volume spike is followed by a few days of extra climb: a real, findable warning sign."""
+    rnd = random.Random(seed)
+    b = flat_bars(n, 50)
+    p, boost = 50.0, 0.0
+    for i in range(n):
+        spike = rnd.random() < 0.04
+        o = p * (1 + rnd.gauss(0, 0.005))
+        c = o * (1 + rnd.gauss(0.0003 + boost, 0.02))
+        b["o"][i], b["c"][i] = o, c
+        b["h"][i] = max(o, c) * (1 + abs(rnd.gauss(0, 0.01)))
+        b["l"][i] = min(o, c) * (1 - abs(rnd.gauss(0, 0.01)))
+        b["v"][i] = int(1e6 * math.exp(rnd.gauss(0, 0.3)) * (4 if spike else 1))
+        boost = 0.012 if spike else max(0.0, boost - 0.003)
+        p = c
+    return b
+
+
+class ClimbPredictor(Base):
+    def setUp(self):
+        super().setUp()
+        self.cfg["min_dollar_volume"] = {"US": 1, "ASX": 1}
+        self.pm = self.wt._predict_mod()
+
+    def grade(self, gen, seed):
+        data = {"S%02d" % k: gen(1260, seed * 100 + k) for k in range(40)}
+        idx = random_walk(1260, seed + 5000, drift=0.0004)
+        return self.pm.fit_and_grade(self.pm.build_rows(data, idx, self.cfg, "US", self.wt), self.cfg)
+
+    def test_random_data_is_not_predictable(self):
+        for seed in (0, 1, 2):
+            res = self.grade(lambda n, s: random_walk(n, s, drift=0.0004), seed)
+            self.assertFalse(res["works"], res["verdict"])
+
+    def test_planted_signal_is_found(self):
+        res = self.grade(planted_walk, 0)
+        self.assertTrue(res["works"], res["verdict"])
+        self.assertIn(res["features"][0]["feature"], ("vol_trend", "rel_vol"))
+        self.assertGreater(res["deciles_best_to_worst"][0], res["deciles_best_to_worst"][-1])
+
+    def test_rolling_max(self):
+        self.assertEqual(self.pm.rolling_max([1, 3, 2, 5, 4, 1], 3), [None, None, 3, 5, 5, 5])
+
+    def test_auc(self):
+        self.assertAlmostEqual(self.pm.auc([0.1, 0.4, 0.35, 0.8], [0, 0, 1, 1]), 0.75)
+
+
 class Sizing(Base):
     def test_risk_sizing_aud_account_us_stock(self):
         # A$10,000, 1% = A$100 risk. Entry 50, stop 48 -> US$2/share = A$3/share -> 33 shares.
@@ -294,6 +341,12 @@ class EndToEnd(unittest.TestCase):
         code, out = self.run_cli("plan", "AAPL", "--setup", "breakout")
         self.assertEqual(code, 0)
         self.assertIn("stop", out)
+
+    def test_3b_predict(self):
+        code, out = self.run_cli("predict", "--market", "US", "--top", "3")
+        self.assertEqual(code, 0)
+        self.assertIn("Climb predictor", out)
+        self.assertIn("Verdict", out)
 
     def test_4_journal_round_trip(self):
         code, out = self.run_cli("journal", "add", "BHP", "--market", "ASX", "--setup", "breakout",

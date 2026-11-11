@@ -5,7 +5,7 @@ month, for monthly momentum), test
 every rule on five years of history before trusting it, size each trade in
 Australian dollars, and keep an honest journal.
 
-Five Claude Code skills, one standard-library Python engine (`engine/wt.py`).
+Six Claude Code skills, one standard-library Python engine (`engine/wt.py`).
 Nothing to pip install, no API keys, and no orders are ever placed.
 
 | command | what it does |
@@ -13,6 +13,7 @@ Nothing to pip install, no API keys, and no orders are ever placed.
 | `/week-trader:week` | This week's best trades to buy, plus what to sell from open trades |
 | `/week-trader:scan` | Today's signals on US and ASX stocks, ranked by backtested edge |
 | `/week-trader:backtest` | Tests the setups on 5 years of data with costs, vs a buy-any-day baseline |
+| `/week-trader:predict` | Climb predictor: rates every stock on how likely it is to beat the average stock over the next 5 days, graded on weeks it never saw |
 | `/week-trader:plan` | Entry, stop, target, sell-by date and share count in AUD for one stock |
 | `/week-trader:journal` | Logs trades, says when to sell, tracks your real win rate and profit |
 
