@@ -1,7 +1,7 @@
 {
   "name": "week-trader",
   "description": "Find, backtest, plan and journal week-long swing trades on US and ASX stocks, sized in Australian dollars. No orders are placed.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": { "name": "Alex Nilsen" },
   "license": "MIT",
   "keywords": ["swing-trading", "asx", "us-stocks", "backtesting", "position-sizing", "trading-journal"]

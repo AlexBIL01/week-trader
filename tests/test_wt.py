@@ -192,6 +192,27 @@ class Momentum(Base):
         self.assertEqual(t["reason"], "time (end of week)")
         self.assertIsNone(t["target"])
 
+    def test_month_ends(self):
+        days = ["2026-10-29", "2026-10-30", "2026-11-02", "2026-11-27", "2026-11-30"]
+        self.assertEqual(self.wt.month_ends(days), {"2026-10-30", "2026-11-30"})   # 30 Nov 2026 is a Monday, next weekday is December
+
+    def test_momentum_month_holds_21_days(self):
+        b = flat_bars(280)
+        self.cfg["costs"]["US"] = {"commission": 0, "slippage_bps": 0}
+        t = self.wt.simulate(b, self.wt.indicators(b), 249, "momentum_month", self.cfg, "US")
+        self.assertEqual(t["days"], 21)
+        self.assertEqual(t["reason"], "time (end of month)")
+        self.assertAlmostEqual(t["stop"], 90.0)   # 100 - 5 x ATR 2
+
+    def test_random_data_has_no_edge(self):
+        """Pure random walks must not produce an 'edge' verdict for any setup."""
+        data = {"S%02d" % k: random_walk(1260, seed=1000 + k, drift=0.0006) for k in range(30)}
+        idx = random_walk(1260, seed=999, drift=0.0006)
+        self.cfg["min_dollar_volume"] = {"US": 1, "ASX": 1}
+        res = self.wt.backtest_market("US", self.cfg, data, idx)
+        for name, sres in res["setups"].items():
+            self.assertFalse(sres["verdict"].startswith("edge"), "%s: %s" % (name, sres["verdict"]))
+
     def test_beats_baseline_rule(self):
         st = {"n": 100, "avg_R": 0.3, "profit_factor": 1.5, "avg_ret": 0.001}
         self.assertTrue(self.wt.verdict(st, {"n": 60, "avg_R": 0.2}, {"n": 40, "avg_R": 0.2}).startswith("edge"))
@@ -260,6 +281,8 @@ class EndToEnd(unittest.TestCase):
             st = json.load(f)
         self.assertGreater(st["setups"]["pullback"]["all"]["n"], 30)
         self.assertGreater(st["setups"]["momentum"]["all"]["n"], 30)
+        self.assertGreater(st["setups"]["momentum_month"]["all"]["n"], 30)
+        self.assertIn("avg_ret", st["baseline_month"])
 
     def test_2_week_report(self):
         code, out = self.run_cli("week")

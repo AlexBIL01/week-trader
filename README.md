@@ -1,6 +1,7 @@
 # Week Trader
 
-Find the best US and ASX stocks to buy and sell within one trading week, test
+Find the best US and ASX stocks to buy and sell within one trading week (or a
+month, for monthly momentum), test
 every rule on five years of history before trusting it, size each trade in
 Australian dollars, and keep an honest journal.
 
@@ -43,6 +44,7 @@ To update later: `/plugin marketplace update week-trader`.
 | `hold_days` | 5 | sell by the close of this trading day |
 | `stop_atr` / `target_atr` | 1.5 / 3.0 | stop and target distance in ATR(14) |
 | `momentum_top` / `momentum_lookback` / `momentum_stop_atr` | 10 / 126 / 3.0 | momentum leaders: how many, ranked on how many days' return, stop distance |
+| `month_hold_days` / `momentum_month_stop_atr` | 21 / 5.0 | monthly momentum: holding period and stop distance |
 | `costs` | US $0 + 5 bps, ASX $5 + 10 bps | commission per side and slippage |
 | `aud_per_usd` | live | fixed AUD/USD rate if set |
 | `watchlist` | empty | extra symbols: `{"US": ["HIMS"], "ASX": ["CXO"]}` |

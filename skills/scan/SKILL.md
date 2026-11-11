@@ -2,7 +2,7 @@
 name: scan
 description: >-
   Week Trader scanner: checks about 110 liquid US stocks and 85 ASX stocks (plus the
-  user's watchlist) for four week-long setups (breakout, pullback, gap-and-go, momentum leaders) on
+  user's watchlist) for four week-long setups (breakout, pullback, gap-and-go, momentum leaders) and one month-long one (monthly momentum) on
   the last daily close, and ranks each signal by how that setup has performed in a
   five-year backtest after costs. Shows whether each market is in an uptrend. Use
   when the user says "scan", "any setups", "what's breaking out", "what's pulling
@@ -27,11 +27,12 @@ python3 "$WT" scan --json           # machine-readable
 | pullback | above the 200-day average, 2-day RSI under 10 | first close above the 5-day average, stop 1.5 ATR, or close on day 5 |
 | gapgo | opens 3%+ above yesterday's close and closes above the open, volume 2x+ normal, above the 200-day average, market index up | same as breakout |
 | momentum | on the week's last trading day (Friday): one of the top 10 stocks in its market by 6-month return, above its 50- and 200-day averages, market index up | close on day 5 (Friday), or a wide stop 3 ATR below entry; no target |
+| momentum_month | the same ranking, on the month's last trading day | close after 21 trading days (about a month), or a stop 5 ATR below entry; no target |
 
 Liquidity filters: price at least US$5 / A$0.50 and average daily turnover at least
 US$20M / A$2M.
 
-Momentum only fires when the last bar is a Friday: run it after Friday's close
+Momentum only fires when the last bar is a Friday, and monthly momentum only on the month's last trading day: run it after Friday's close
 (Friday afternoon for the ASX, Saturday morning Adelaide time for the US).
 
 ## Reading the output
