@@ -469,6 +469,8 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("Model score", out)
         self.assertIn("Rank:", out)
+        code, out = self.run_cli("predict", "AAPL", "--json")
+        self.assertNotIn("most likely to rise", json.loads(out)["plan"]["why"])
 
     def test_4_journal_round_trip(self):
         code, out = self.run_cli("journal", "add", "BHP", "--market", "ASX", "--setup", "breakout",

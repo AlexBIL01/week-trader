@@ -34,7 +34,7 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 HOME = os.environ.get("WT_HOME") or os.path.join(os.getcwd(), "weektrader")
 OFFLINE_DIR = os.environ.get("WT_OFFLINE_DIR")  # tests and demos: read <dir>/<SYMBOL>.json
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) week-trader/" + VERSION
@@ -1093,6 +1093,9 @@ def predict_symbol(sym, market, cfg, refresh=False):
     reg = regime_map(idx) if idx else None
     fired = signals_at(b, ind, i, cfg, market, reg, sym, None)
     plan = make_plan(sym, market, b, ind, "climb", cfg)
+    plan["why"] = "Climb model score %.0f%%, rank %d of %d on %s (%s). %s" % (
+        100 * p, rank, len(others) + 1, market, "in the model's top 10%" if p >= res["top10"]["p_cutoff"] else "not in the model's top 10%",
+        "The model is proven on unseen weeks." if res["works"] else "Watch only: the model is not proven on unseen weeks.")
     signs = []
     for j, name in enumerate(pm.NAMES):
         signs.append({"meaning": pm.LABELS[name], "value": f[j], "z": (f[j] - res["model"]["mu"][j]) / res["model"]["sd"][j],
